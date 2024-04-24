@@ -152,7 +152,7 @@ local function highlight_buffer(buf, ns, lines, line_start, clear)
 end
 
 
-function Highlight_all(buffer)
+local function highlight_all(buffer)
 
     local row_min = 0
     local row_max = -1
@@ -162,7 +162,7 @@ function Highlight_all(buffer)
 end
 
 
-function Highlight_view(buffer, screen_height)
+local function highlight_view(buffer, screen_height)
 
     local cursor_row = vim.api.nvim_win_get_cursor(0)[1]
     local row_min = math.max(0, cursor_row - screen_height)
@@ -173,9 +173,15 @@ function Highlight_view(buffer, screen_height)
 end
 
 
-function Highlight_clear(buffer)
+local function highlight_clear(buffer)
 
     highlight_buffer(buffer, DEFAULT_NAMESPACE, {}, 0, true)
 end
+
+return {
+    highlight_all= highlight_all,
+    highlight_view= highlight_view,
+    highlight_clear= highlight_clear,
+}
 
 
