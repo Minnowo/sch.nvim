@@ -1,0 +1,23 @@
+
+--[[ SUCCESS
+#F0F
+#FF00FF
+#FFF00F8F
+#F0F
+#FF00FF
+#FFF00F8F
+#F0F 
+#F00
+#FF0000 
+#F00
+#FFF00F8F
+#F00
+#def
+#deadbeef
+]]
+
+--[[ FAIL
+#F0FF
+#F0FFF
+#F0FFF0F
+]]
