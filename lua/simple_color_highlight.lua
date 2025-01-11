@@ -1,9 +1,20 @@
 
 local DEFAULT_NAMESPACE = vim.api.nvim_create_namespace("simple_color_highlight")
 local HIGHLIGHT_NAME_PREFIX = "sch"
-local HASHTAG_BYTE = ("#"):byte()
 local HIGHLIGHT_CACHE = {}
 
+local HASHTAG_BYTE = ("#"):byte()
+local R_BYTE  = ("r"):byte()
+local R_BYTE2 = ("R"):byte()
+local G_BYTE  = ("g"):byte()
+local G_BYTE2 = ("G"):byte()
+local B_BYTE  = ("b"):byte()
+local B_BYTE2 = ("B"):byte()
+local A_BYTE  = ("a"):byte()
+local A_BYTE2 = ("A"):byte()
+local BRACKET_OPEN_BYTE  = ("("):byte()
+local BRACKET_CLOSE_BYTE = (")"):byte()
+local COMMA_BYTE = (","):byte()
 
 local function color_is_bright(r, g, b)
 
@@ -14,19 +25,23 @@ local function color_is_bright(r, g, b)
     return luminance > 0.5
 end
 
+local function to_hex(r, g, b)
+    return string.format("%02X%02x%02x", r, g, b)
+end
+
+local function byte_is_whitespace(b)
+    return b == 32 or b == 9
+end
+
+local function byte_is_number(b)
+    return b >= 48 and b <= 57
+end
 
 local function byte_is_hex(byte)
     return (byte >= 48 and byte <= 57)  -- 0-9
         or (byte >= 65 and byte <= 70)  -- A-F
         or (byte >= 97 and byte <= 102) -- a-f
 end
-
-local function is_alphanumeric(byte)
-    return (byte >= 48 and byte <= 57)  -- 0-9
-        or (byte >= 65 and byte <= 90)  -- A-Z
-        or (byte >= 97 and byte <= 122) -- a-z
-end
-
 
 local RGB_MIN_LEN = 3
 local RGB_MID_LEN = 6
@@ -65,6 +80,117 @@ local function rgb_hex_parser(line, i)
 	return hex_len, line:sub(i, i + hex_len - 1)
 end
 
+local RGB_FUNC_MIN_LEN = #"rgb(1,1,1)"
+
+local function rgb_function_parser(line, i)
+
+    local length = #line - i
+
+    if length < RGB_FUNC_MIN_LEN then
+        return
+    end
+
+    local r = line:byte(i)
+
+	if r ~= R_BYTE and r ~= R_BYTE2 then
+        return
+	end
+
+    i = i + 1
+    local g = line:byte(i)
+
+	if g ~= G_BYTE and g ~= G_BYTE2 then
+        return
+	end
+
+    i = i + 1
+    local b = line:byte(i)
+
+    if b ~= B_BYTE and b ~= B_BYTE2 then
+        return
+    end
+
+    i = i + 1
+    local a = line:byte(i)
+    local isRGBA = a == A_BYTE or a == A_BYTE2
+
+    local token = 1
+    local tokens = {
+        BRACKET_OPEN_BYTE,
+        0,
+        COMMA_BYTE,
+        0,
+        COMMA_BYTE,
+        0,
+        COMMA_BYTE,
+        0,
+        BRACKET_CLOSE_BYTE
+    }
+
+    if isRGBA then
+        i = i + 1
+    else
+        tokens[7] = BRACKET_CLOSE_BYTE
+    end
+
+    local j = 0
+
+	while j < length do
+
+        local index = i + j
+		local byte = line:byte(index)
+
+        if byte_is_whitespace(byte) then
+            j = j + 1
+            goto continue
+        end
+
+        local search = tokens[token]
+
+        if search == 0 then
+            -- match number and put number into tokens[token]
+
+            local num_end = index
+
+            while num_end <= #line and byte_is_number(line:byte(num_end)) do
+                num_end = num_end + 1
+            end
+
+            if num_end == index then
+                return
+            end
+
+            local num = tonumber(line:sub(index, num_end - 1))
+
+            if num > 255 then
+                return
+            end
+
+            tokens[token] = num
+
+            j = j + (num_end - index)
+            token = token + 1
+
+        elseif byte == search then
+
+            j = j + 1
+            token = token + 1
+
+            if search == BRACKET_CLOSE_BYTE then
+                break
+            end
+        else
+            return
+        end
+
+        ::continue::
+	end
+
+    -- stupid hack to not have to write more lua
+    local hex_string = to_hex(tokens[2], tokens[4], tokens[6])
+
+    return i + j, hex_string
+end
 
 local function make_highlight_name(rgb)
 	return table.concat({HIGHLIGHT_NAME_PREFIX, rgb}, '_')
@@ -132,11 +258,13 @@ local function highlight_buffer(buf, ns, lines, line_start, clear)
 
             local length, rgb_hex = rgb_hex_parser(line, i)
 
+            if not length then
+                length, rgb_hex = rgb_function_parser(line, i)
+            end
+
             if length then
 
                 local highlight_name = create_highlight(rgb_hex)
-
-                -- print(highlight_name)
 
                 vim.api.nvim_buf_add_highlight(buf, ns, highlight_name, line_number - 1, i - 1, i + length)
 
