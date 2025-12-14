@@ -3,7 +3,6 @@ local DEFAULT_NAMESPACE = vim.api.nvim_create_namespace("simple_color_highlight"
 local HIGHLIGHT_NAME_PREFIX = "sch"
 local HIGHLIGHT_CACHE = {}
 
-local HASHTAG_BYTE = ("#"):byte()
 local R_BYTE  = ("r"):byte()
 local R_BYTE2 = ("R"):byte()
 local G_BYTE  = ("g"):byte()
@@ -12,9 +11,34 @@ local B_BYTE  = ("b"):byte()
 local B_BYTE2 = ("B"):byte()
 local A_BYTE  = ("a"):byte()
 local A_BYTE2 = ("A"):byte()
+
+local O_BYTE  = ("o"):byte()
+local O_BYTE2 = ("O"):byte()
+local K_BYTE  = ("k"):byte()
+local K_BYTE2 = ("K"):byte()
+local L_BYTE  = ("l"):byte()
+local L_BYTE2 = ("L"):byte()
+local C_BYTE  = ("c"):byte()
+local C_BYTE2 = ("C"):byte()
+local H_BYTE  = ("h"):byte()
+local H_BYTE2 = ("H"):byte()
+
+local HASHTAG_BYTE       = ("#"):byte()
+local PERCENT_BYTE       = ("%"):byte()
 local BRACKET_OPEN_BYTE  = ("("):byte()
 local BRACKET_CLOSE_BYTE = (")"):byte()
-local COMMA_BYTE = (","):byte()
+local COMMA_BYTE         = (","):byte()
+local PERIOD_BYTE        = ("."):byte()
+local MINUS_BYTE         = ("-"):byte()
+local SLASH_BYTE         = ("/"):byte()
+
+local OKLCH_FUNC_MIN_LEN = #"oklch(x x x)"
+
+local RGB_FUNC_MIN_LEN = #"rgb(1,1,1)"
+
+local RGB_HEX_MIN_LEN = #"123"
+local RGB_HEX_MID_LEN = #"112233"
+local RGB_HEX_MAX_LEN = #"11223344"
 
 local function color_is_bright(r, g, b)
 
@@ -43,16 +67,153 @@ local function byte_is_hex(byte)
         or (byte >= 97 and byte <= 102) -- a-f
 end
 
-local RGB_MIN_LEN = 3
-local RGB_MID_LEN = 6
-local RGB_MAX_LEN = 8
+local function linear_to_srgb(c)
+    if c <= 0 then c = 0 end
+    if c >= 1 then c = 1 end
+    if c <= 0.0031308 then
+        return c * 12.92
+    else
+        return 1.055 * (c ^ (1/2.4)) - 0.055
+    end
+end
+
+-- See https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Values/color_value/oklch
+-- Targeting Absolute value syntax only
+local function oklch_function_parser(line, i)
+    local length = #line - i
+    if length < OKLCH_FUNC_MIN_LEN then
+        return
+    end
+
+    local matchStart = i
+
+    do
+        -- Check the oklch header
+        local b;
+        b = line:byte(i); i = i + 1; if b ~= O_BYTE and b ~= O_BYTE2 then return end
+        b = line:byte(i); i = i + 1; if b ~= K_BYTE and b ~= K_BYTE2 then return end
+        b = line:byte(i); i = i + 1; if b ~= L_BYTE and b ~= L_BYTE2 then return end
+        b = line:byte(i); i = i + 1; if b ~= C_BYTE and b ~= C_BYTE2 then return end
+        b = line:byte(i); i = i + 1; if b ~= H_BYTE and b ~= H_BYTE2 then return end
+
+        -- whitespace
+        while i <= #line and byte_is_whitespace(line:byte(i)) do i = i + 1 end
+
+        -- open bracket
+        if line:byte(i) ~= BRACKET_OPEN_BYTE then
+            return
+        end
+
+        i = i + 1
+    end
+
+    local numbers = {}
+
+    for idx = 1, 4 do
+
+        -- whitespace
+        while i <= #line and byte_is_whitespace(line:byte(i)) do i = i + 1 end
+
+        -- parse number (int or float)
+        local num_start = i
+        local first = true
+        while i <= #line do
+            local b = line:byte(i)
+            if byte_is_number(b) or b == PERIOD_BYTE then
+                i = i + 1
+            elseif first and b == MINUS_BYTE then
+                i = i + 1
+                first = false
+            else
+                break
+            end
+        end
+
+        if num_start == i then
+            return
+        end
+
+        local num = tonumber(line:sub(num_start, i - 1))
+
+        if not num then
+            return
+        end
+
+        -- skip whitespace
+        while i <= #line and byte_is_whitespace(line:byte(i)) do i = i + 1 end
+
+        -- handle % symbol after first or second number
+        if (idx == 1 or idx == 2) and line:byte(i) == PERCENT_BYTE then
+            num = num / 100
+            i = i + 1
+        end
+
+        numbers[idx] = num
+
+        -- handle the / symbol for possible alpha channel
+        if (idx == 3) then
+
+            -- skip whitespace
+            while i <= #line and byte_is_whitespace(line:byte(i)) do i = i + 1 end
+
+            if line:byte(i) == SLASH_BYTE then
+                i = i + 1
+            else
+                break
+            end
+        end
+    end
+
+    -- skip whitespace
+    while i <= #line and byte_is_whitespace(line:byte(i)) do i = i + 1 end
+
+    -- expect ')'
+    if line:byte(i) ~= BRACKET_CLOSE_BYTE then
+        return
+    end
+
+    local L, C, H = numbers[1], numbers[2], numbers[3]
+
+    if C < 0 then
+        C = 0
+    end
+
+    -- Convert degrees to radians
+    local H_rad = math.rad(H)
+
+    -- OKLCH -> OKLab
+    local a = C * math.cos(H_rad)
+    local b = C * math.sin(H_rad)
+    local l = L
+
+    -- OKLab -> linear RGB
+    local l_ = l + 0.3963377774 * a + 0.2158037573 * b
+    local m_ = l - 0.1055613458 * a - 0.0638541728 * b
+    local s_ = l - 0.0894841775 * a - 1.2914855480 * b
+
+    local l_3 = l_ * l_ * l_
+    local m_3 = m_ * m_ * m_
+    local s_3 = s_ * s_ * s_
+
+    local r_lin =  4.0767416621 * l_3 - 3.3077115913 * m_3 + 0.2309699292 * s_3
+    local g_lin = -1.2684380046 * l_3 + 2.6097574011 * m_3 - 0.3413193965 * s_3
+    local b_lin = -0.0041960863 * l_3 - 0.7034186147 * m_3 + 1.7076147010 * s_3
+
+    local hex_string = to_hex(
+        math.floor(linear_to_srgb(r_lin) * 255 + 0.5), -- r
+        math.floor(linear_to_srgb(g_lin) * 255 + 0.5), -- g
+        math.floor(linear_to_srgb(b_lin) * 255 + 0.5)  -- b
+    )
+
+    return i - matchStart, hex_string
+end
 
 local function rgb_hex_parser(line, i)
 
-    local max_loop = math.min(RGB_MAX_LEN, #line - i)
+    local max_loop = math.min(RGB_HEX_MAX_LEN, #line - i)
     local hex_len = 0
 
-    if (max_loop < RGB_MIN_LEN) or (i + RGB_MIN_LEN > #line) then
+    if (max_loop < RGB_HEX_MIN_LEN) or (i + RGB_HEX_MIN_LEN > #line) then
         return
     end
 
@@ -73,14 +234,13 @@ local function rgb_hex_parser(line, i)
         hex_len = hex_len + 1
 	end
 
-    if hex_len ~= RGB_MIN_LEN and hex_len ~= RGB_MID_LEN and hex_len ~= RGB_MAX_LEN then
+    if hex_len ~= RGB_HEX_MIN_LEN and hex_len ~= RGB_HEX_MID_LEN and hex_len ~= RGB_HEX_MAX_LEN then
         return
     end
 
 	return hex_len, line:sub(i, i + hex_len - 1)
 end
 
-local RGB_FUNC_MIN_LEN = #"rgb(1,1,1)"
 
 local function rgb_function_parser(line, i)
 
@@ -90,27 +250,12 @@ local function rgb_function_parser(line, i)
         return
     end
 
-    local r = line:byte(i)
+    -- check rgb header
+    local b;
+    b = line:byte(i); i = i + 1; if b ~= R_BYTE and b ~= R_BYTE2 then return end
+    b = line:byte(i); i = i + 1; if b ~= G_BYTE and b ~= G_BYTE2 then return end
+    b = line:byte(i); i = i + 1; if b ~= B_BYTE and b ~= B_BYTE2 then return end
 
-	if r ~= R_BYTE and r ~= R_BYTE2 then
-        return
-	end
-
-    i = i + 1
-    local g = line:byte(i)
-
-	if g ~= G_BYTE and g ~= G_BYTE2 then
-        return
-	end
-
-    i = i + 1
-    local b = line:byte(i)
-
-    if b ~= B_BYTE and b ~= B_BYTE2 then
-        return
-    end
-
-    i = i + 1
     local a = line:byte(i)
     local isRGBA = a == A_BYTE or a == A_BYTE2
 
@@ -196,7 +341,6 @@ local function make_highlight_name(rgb)
 	return table.concat({HIGHLIGHT_NAME_PREFIX, rgb}, '_')
 end
 
-
 local function create_highlight(rgb_hex)
 
 	rgb_hex = rgb_hex:lower()
@@ -210,7 +354,7 @@ local function create_highlight(rgb_hex)
     highlight_name = make_highlight_name(rgb_hex)
     HIGHLIGHT_CACHE[rgb_hex] = highlight_name
 
-    if #rgb_hex == RGB_MIN_LEN then
+    if #rgb_hex == RGB_HEX_MIN_LEN then
 
         rgb_hex = table.concat {
             rgb_hex:sub(1,1):rep(2);
@@ -218,7 +362,7 @@ local function create_highlight(rgb_hex)
             rgb_hex:sub(3,3):rep(2);
         }
 
-    elseif #rgb_hex == RGB_MAX_LEN then
+    elseif #rgb_hex == RGB_HEX_MAX_LEN then
 
         rgb_hex = rgb_hex:sub(1,6)
     end
@@ -260,6 +404,10 @@ local function highlight_buffer(buf, ns, lines, line_start, clear)
 
             if not length then
                 length, rgb_hex = rgb_function_parser(line, i)
+            end
+
+            if not length then
+                length, rgb_hex = oklch_function_parser(line, i)
             end
 
             if length then
